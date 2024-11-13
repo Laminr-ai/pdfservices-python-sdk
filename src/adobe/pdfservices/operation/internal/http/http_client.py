@@ -58,22 +58,38 @@ def _append_default_headers(headers: dict):
 def _execute_request(http_request: HttpRequest):
     response = None
     timeout = (http_request.connect_timeout, http_request.read_timeout)
+    
     try:
+        # Add session configuration for better timeout handling
+        session = requests.Session()
+        if http_request.proxies:
+            session.proxies = http_request.proxies.proxy_config_map()
+        
+        # Configure retry strategy
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=3,
+            pool_connections=10,
+            pool_maxsize=10,
+            pool_block=False
+        )
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+
         if http_request.method == HttpMethod.POST:
             if http_request.data:
-                response = requests.post(url=http_request.url,
-                                         data=http_request.data,
-                                         headers=http_request.headers,
-                                         timeout=timeout,
-                                         proxies=http_request.proxies.proxy_config_map() if
-                                         http_request.proxies is not None else None)
+                response = session.post(
+                    url=http_request.url,
+                    data=http_request.data,
+                    headers=http_request.headers,
+                    timeout=timeout
+                )
             elif http_request.files:
-                response = requests.post(url=http_request.url,
-                                         files=http_request.files,
-                                         headers=http_request.headers,
-                                         timeout=timeout,
-                                         proxies=http_request.proxies.proxy_config_map() if
-                                         http_request.proxies is not None else None)
+                response = session.post(
+                    url=http_request.url,
+                    files=http_request.files,
+                    headers=http_request.headers,
+                    timeout=timeout
+                )
                 for key, val in http_request.files.items():
                     if hasattr(val[1], 'close'):
                         val[1].close()
@@ -92,8 +108,19 @@ def _execute_request(http_request: HttpRequest):
                                        proxies=http_request.proxies.proxy_config_map() if
                                        http_request.proxies is not None else None)
 
+    except requests.exceptions.Timeout as e:
+        _logger.error(f"Request timed out: {str(e)}")
+        raise SdkException("Request timed out during operation", sys.exc_info())
+    except requests.exceptions.ConnectionError as e:
+        _logger.error(f"Connection error occurred: {str(e)}")
+        raise SdkException("Connection error during request", sys.exc_info())
     except Exception as e:
-        raise SdkException("Request could not be completed. Possible cause attached!", sys.exc_info())
+        _logger.error(f"Unexpected error during request: {str(e)}")
+        raise SdkException("Request could not be completed", sys.exc_info())
+    finally:
+        if 'session' in locals():
+            session.close()
+            
     return response
 
 
